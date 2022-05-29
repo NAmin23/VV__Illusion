@@ -5,6 +5,7 @@ using System.IO.Ports;
 
 public class gvsUpdatedController : MonoBehaviour
 {
+  // Placed on hand
   SerialPort sp;
   string msg;
 
@@ -18,8 +19,7 @@ public class gvsUpdatedController : MonoBehaviour
   string port;
 
   //Coefficients of torque
-  [Range(0, 1)] [SerializeField] int a;
-  private int b;
+  [Range(0, 1)] [SerializeField] float a;
 
   // Mass and acceleration
   public GameObject hand;
@@ -33,9 +33,9 @@ public class gvsUpdatedController : MonoBehaviour
   private Vector3 currMassPosition;
   private Vector3 lastMassPosition;
 
-  // Booleans
-  private bool contact;
-  private bool grounded;
+  // NEW mass and acceleration
+  private Vector3 prevPosition;
+  private float prevVelocity;
 
   // Head to arm radius
   public float shoulderOffset;
@@ -45,18 +45,12 @@ public class gvsUpdatedController : MonoBehaviour
   private float dynamicTorque;
   private float staticTorque;
   private float totalTorque;
+  [Range(0, 2f)] [SerializeField] float k;
+  [Range(0, 1000)] [SerializeField] int minThreshold;
 
   // Use this for initialization
   void Start()
   {
-    // Instantiate variables for acceleration calculation
-    Vector3 currHandPosition = Vector3.zero;
-    Vector3 lastHandPosition = Vector3.zero;
-    Vector3 currMassPosition = Vector3.zero;
-    Vector3 lastMassPosition = Vector3.zero;
-
-    // Instantiate torque coefficients
-    b = 1 - a;
 
     // Port stuff
 
@@ -99,11 +93,20 @@ public class gvsUpdatedController : MonoBehaviour
         maxCurrent = 25 * currentAdjuster;
         Debug.Log("left");
       }
+      //else if (Input.GetAxis("Axis 3") > 0) // right
       else if (Input.GetAxis("Axis 3") > 0) // right
       {
         polarity = 2;
-        maxCurrent = 25 * currentAdjuster;
-        Debug.Log("right");
+        maxCurrent = Mathf.RoundToInt(totalTorque * k);
+        if(maxCurrent >= 1000)
+        {
+          maxCurrent = 1000;
+        }
+        else if (maxCurrent < minThreshold)
+        {
+          maxCurrent = 0;
+        }
+        Debug.Log("right " + maxCurrent);
       }
       else
       {
@@ -118,29 +121,63 @@ public class gvsUpdatedController : MonoBehaviour
       print("GVS Command: " + commandString);
     } // Left right GVS
 
+
   }
 
   void FixedUpdate()
   {
-    // Calculate acceleration of hand
-    currHandPosition = hand.transform.position;
-    handAcceleration = Mathf.Pow((currHandPosition.y - lastHandPosition.y), 2) / Mathf.Pow(Time.fixedDeltaTime, 2);
-    lastHandPosition = currHandPosition;
-    //Debug.Log("hand acceleration is " + handAcceleration);
+    if(mass != null)
+    {
+      prevVelocity = calculateVelocity(mass, prevPosition);
+      massAcceleration = calculateAcceleration(calculateVelocity(mass, mass.transform.position), prevVelocity);
 
-    //Calculate acceleration of mass
-    currMassPosition = mass.transform.position;
-    massAcceleration = Mathf.Pow((currMassPosition.y - lastMassPosition.y), 2) / Mathf.Pow(Time.fixedDeltaTime, 2);
-    lastMassPosition = currMassPosition;
-    //Debug.Log("mass acceleration is " + massAcceleration);
+      // Tracking head to hand
+      length = hand.transform.position.x - head.transform.position.x + shoulderOffset;
 
-    // Tracking head to hand
-    length = head.transform.position.x - hand.transform.position.x + shoulderOffset;
+      // Torque values
+      staticTorque = massInGrams * 9.8f * length; // Convert 9.8 to Unity units
+      dynamicTorque = massInGrams * massAcceleration * length;
+      totalTorque = a * dynamicTorque + (1 - a) * staticTorque;
+      Debug.Log("static torque is " + (1 - a) * staticTorque + " and dynamic torque is " + a * dynamicTorque);
+      //Debug.Log("total torque is " + totalTorque);
 
-    // Torque values
-    dynamicTorque = massInGrams * handAcceleration * length;
-    staticTorque = massInGrams * massAcceleration * length;
-    totalTorque = a * dynamicTorque + b * staticTorque;
-    Debug.Log("total torque is " + totalTorque);
+      // Update position and velocity
+      prevPosition = calculatePosition(mass);
+    }
+  }
+
+  Vector3 calculatePosition(GameObject contactObject)
+  {
+    return contactObject.transform.position;
+  }
+
+  float calculateVelocity(GameObject contactObject, Vector3 previousPosition)
+  {
+    return ((contactObject.transform.position.y - previousPosition.y) / Time.deltaTime);
+  }
+
+  float calculateAcceleration(float currentVelocity, float previousVelocity)
+  {
+    return ((currentVelocity - previousVelocity) / Time.deltaTime);
+  }
+
+  void OnTriggerEnter(Collider other)
+  {
+    if(other.GetComponent<objectTracker>().ungrounded == true)
+     {
+        mass = other.gameObject;
+        other.GetComponent<objectTracker>().contact = true;
+        massInGrams += other.GetComponent<objectTracker>().massInGrams;
+     }
+  }
+
+  void OnTriggerExit(Collider other)
+  {
+    if (other.GetComponent<objectTracker>().contact == true)
+    {
+      mass = other.gameObject;
+      other.GetComponent<objectTracker>().contact = false;
+      massInGrams -= other.GetComponent<objectTracker>().massInGrams;
+    }
   }
 }
